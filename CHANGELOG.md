@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.1
+- Technical details panel: the TV state row is translated, and "Last automatic action" is now "Last TV change handled" (it is also updated in manual mode).
+- README: the board's blue LED mirrors the TV state.
+
 ## 1.2.0
 - Firmware, comments and log messages translated to English; web remote in English and Spanish (follows the browser, or `/?lang=es|en`).
 - Settings moved to `config.h`; new `WEB_AUTH` option to drop the web password (OTA keeps its password) and `RECEIVER_NAME`.

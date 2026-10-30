@@ -14,7 +14,7 @@
 #include "webpage.h"  // the web remote (PAGE)
 
 const char* HOSTNAME   = "onkyo-ri";
-const char* FW_VERSION = "1.2.0";
+const char* FW_VERSION = "1.2.1";
 
 // =========================================================================
 // 1. HARDWARE
