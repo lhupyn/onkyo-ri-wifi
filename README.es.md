@@ -113,7 +113,7 @@ Los códigos son de 12 bits. La entrada debe coincidir con el código para que e
 **No funcionan:**
 
 - `0x12E` no apaga el receptor desde DVD.
-- **No envíes nunca `0x420`–`0x43F`.** Son códigos de prueba y servicio: en el TX-SR605, un modelo muy cercano, abren la pantalla de configuración o emiten ruidos fuertes de prueba, y en otros Onkyo pueden borrar ajustes. El endpoint `/raw` rechaza cualquier código por encima de `0x1FF`.
+- **No envíes nunca `0x420`–`0x43F`.** Son códigos de prueba y servicio: en el TX-SR605, un modelo muy cercano, abren la pantalla de configuración o emiten ruidos fuertes de prueba, y en otros Onkyo pueden borrar ajustes. El endpoint `/raw` rechaza cualquier código por encima de `0x1FF`. En el TX-SR600E, `0x420` solo no tuvo ningún efecto visible ni audible (probado dos veces, la segunda con más volumen), pero eso no dice nada del resto del rango.
 - `0x02F` es «encender + CD», no una orden de apagado.
 - Ningún otro código de `0x010` a `0x1F0` (de `0x10` en `0x10`) cambió la entrada. V1, V2, V4, TUNER y PHONO no se pueden seleccionar así.
 - Los códigos de otros modelos Onkyo no hicieron nada aquí: `0x002`/`0x003` (volumen), `0x004` y `0x0DA`/`0x0EA` (encendido), `0x005` (mute), `0x006`–`0x00B`, `0x013`, `0x0E3` (entradas) y `0x0D5`/`0x0D6` (entrada siguiente/anterior). El volumen se leyó en la pantalla antes y después de ocho pasos de cada uno y no cambió. También se probaron con CD, TAPE y DVD seleccionadas, junto con los códigos de volumen, mute y apagado de cada familia de entrada (`0x022`–`0x025` y `0x02E` para CD, `0x072`–`0x075` y `0x07E` para TAPE, `0x122`–`0x125` y `0x12E` para DVD): tampoco hicieron nada.

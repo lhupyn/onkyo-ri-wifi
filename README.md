@@ -113,7 +113,7 @@ Codes are 12 bits. The input has to match the code for the "off" and volume comm
 **Do not work:**
 
 - `0x12E` does not switch the receiver off from DVD.
-- **Never send `0x420`–`0x43F`.** They are test and service codes: on the closely related TX-SR605 they open the setup screen or play loud test noise, and on other Onkyo models they can clear settings. The `/raw` endpoint refuses anything above `0x1FF`.
+- **Never send `0x420`–`0x43F`.** They are test and service codes: on the closely related TX-SR605 they open the setup screen or play loud test noise, and on other Onkyo models they can clear settings. The `/raw` endpoint refuses anything above `0x1FF`. On the TX-SR600E, `0x420` alone had no visible or audible effect (tried twice, the second time at a higher volume), but that says nothing about the rest of the range.
 - `0x02F` is "power on + CD", not an off command.
 - No other code from `0x010` to `0x1F0` (in steps of `0x10`) changed the input. V1, V2, V4, TUNER and PHONO cannot be selected this way.
 - Codes known from other Onkyo models did nothing here: `0x002`/`0x003` (volume), `0x004` and `0x0DA`/`0x0EA` (power), `0x005` (mute), `0x006`–`0x00B`, `0x013`, `0x0E3` (inputs) and `0x0D5`/`0x0D6` (next/previous input). The volume was read on the display before and after eight steps of each, and stayed the same. They were also tried with CD, TAPE and DVD selected, together with the matching volume, mute and off codes of each input family (`0x022`–`0x025` and `0x02E` for CD, `0x072`–`0x075` and `0x07E` for TAPE, `0x122`–`0x125` and `0x12E` for DVD): no effect either.
