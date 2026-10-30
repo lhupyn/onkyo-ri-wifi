@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 290" width="760" height="290" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <title>Wiring: NodeMCU D2 to the RI jack tip, GND to the sleeve</title>
+  <rect width="760" height="290" rx="14" fill="#f6f8fa" stroke="#d0d7de"/>
+
+  <!-- NodeMCU -->
+  <rect x="24" y="36" width="190" height="196" rx="10" fill="#1f2328"/>
+  <text x="119" y="68" fill="#ffffff" text-anchor="middle" font-size="16" font-weight="700">NodeMCU V3</text>
+  <text x="119" y="86" fill="#9aa4af" text-anchor="middle" font-size="12">ESP8266</text>
+  <rect x="79" y="190" width="80" height="30" rx="4" fill="#3b4048"/>
+  <text x="119" y="210" fill="#c9d1d9" text-anchor="middle" font-size="12">micro-USB</text>
+  <circle cx="214" cy="112" r="6" fill="#f5a524"/>
+  <text x="200" y="116" fill="#ffffff" text-anchor="end" font-size="13" font-weight="600">D2 (GPIO4)</text>
+  <circle cx="214" cy="170" r="6" fill="#6e7781"/>
+  <text x="200" y="174" fill="#ffffff" text-anchor="end" font-size="13" font-weight="600">GND</text>
+
+  <!-- 3.5 mm plug -->
+  <rect x="352" y="108" width="62" height="50" rx="8" fill="#2d9cdb"/>
+  <rect x="414" y="120" width="70" height="26" fill="#aab4bf"/>
+  <rect x="484" y="120" width="7" height="26" fill="#1f2328"/>
+  <rect x="491" y="120" width="22" height="26" fill="#aab4bf"/>
+  <rect x="513" y="120" width="7" height="26" fill="#1f2328"/>
+  <rect x="520" y="120" width="26" height="26" rx="13" fill="#aab4bf"/>
+
+  <!-- wires: signal (orange) and ground (dark) -->
+  <path d="M220 112 H300 V84 H533 V120" fill="none" stroke="#f5a524" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M220 170 H300 V204 H449 V146" fill="none" stroke="#6e7781" stroke-width="3" stroke-linejoin="round"/>
+  <text x="533" y="72" text-anchor="middle" font-size="13" font-weight="600" fill="#9a6700">tip = signal</text>
+  <text x="449" y="226" text-anchor="middle" font-size="13" font-weight="600" fill="#57606a">sleeve = ground</text>
+  <text x="502" y="172" text-anchor="middle" font-size="11" fill="#6e7781">ring: not used</text>
+
+  <!-- receiver -->
+  <rect x="610" y="62" width="130" height="140" rx="10" fill="#1f2328"/>
+  <text x="675" y="92" fill="#ffffff" text-anchor="middle" font-size="14" font-weight="700">Onkyo receiver</text>
+  <text x="675" y="112" fill="#9aa4af" text-anchor="middle" font-size="11">rear panel</text>
+  <rect x="610" y="126" width="26" height="14" rx="7" fill="#0d1117" stroke="#c9d1d9" stroke-width="1.5"/>
+  <text x="675" y="170" fill="#ffffff" text-anchor="middle" font-size="12" font-weight="600">RI</text>
+  <text x="675" y="186" fill="#ffffff" text-anchor="middle" font-size="11">REMOTE CONTROL</text>
+  <path d="M552 133 H606" stroke="#57606a" stroke-width="2" stroke-dasharray="4 4"/>
+  <path d="M600 127 L610 133 L600 139 Z" fill="#57606a"/>
+
+  <text x="380" y="266" text-anchor="middle" font-size="12" fill="#57606a">Cable colours vary: check with a multimeter which wire reaches the tip and which the sleeve.</text>
+</svg>

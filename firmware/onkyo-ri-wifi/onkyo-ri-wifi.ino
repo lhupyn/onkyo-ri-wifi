@@ -1,63 +1,82 @@
+// onkyo-ri-wifi: ESP8266 firmware that
+//  - sends Onkyo RI (Remote Interactive) codes to a receiver over its RI jack,
+//  - follows a Samsung (Tizen) TV: TV on -> receiver on, TV off -> receiver off,
+//  - serves a phone-friendly web remote and accepts OTA updates over WiFi.
+// https://github.com/lhupyn/onkyo-ri-wifi
+
 #include <ESP8266WiFi.h>
 #include <ESP8266HTTPClient.h>
 #include <ESP8266WebServer.h>
 #include <ArduinoOTA.h>
 #include <WiFiClient.h>
 
-// =========================================================================
-// 1. CONFIGURACIÓN: copia secrets.example.h como secrets.h y rellénalo
-//    (WIFI_SSID, WIFI_PASSWORD, TV_IP y CLAVE_ADMIN)
-// =========================================================================
-#include "secrets.h"
+#include "config.h"   // copy config.example.h to config.h and fill it in
+#include "webpage.h"  // the web remote (PAGE)
 
-const char* HOSTNAME = "onkyo-ri";
+const char* HOSTNAME   = "onkyo-ri";
+const char* FW_VERSION = "1.2.0";
 
 // =========================================================================
-// 2. PIN Y CÓDIGOS ONKYO RI (TX-SR600E)
+// 1. HARDWARE
 // =========================================================================
-const int PIN_RI_OUT = D2; // Pin D2 del NodeMCU V3 (GPIO4)
+const int PIN_RI_OUT = D2;  // NodeMCU D2 (GPIO4) -> RI jack tip. GND -> RI jack sleeve.
 
-// La tele va por el óptico 1, asignado a la entrada V3 del ampli: 0x1AF = encender + V3.
-// En el SR600E solo CD (0x020), TAPE (0x070), DVD (0x120) y V3 (0x1A0) se pueden
-// seleccionar por RI, y solo en V3 funcionan bien apagado (0x1AE) y volumen (0x1A2/3).
-// OJO: 0x12E y 0x420 NO apagan el SR600E; 0x02F es "encender + CD".
-uint16_t ONKYO_CMD_ON  = 0x1AF;
-uint16_t ONKYO_CMD_OFF = 0x1AE;
-const uint16_t ONKYO_CMD_INPUT_VIDEO3 = 0x1A0;
-const unsigned long COOLDOWN_ACCION = 15000; // mín. entre dos acciones, evita bucles ON/OFF
-unsigned long ultimaAccion = 0;
+// =========================================================================
+// 2. RI CODES. These are specific to the receiver model.
+//    Verified on an Onkyo TX-SR600E, where the TV is on the V3 (GAME/TV) input.
+//    On this model power off, volume and mute are only accepted while that
+//    input is selected, and only CD, TAPE, DVD and V3 can be selected over RI.
+//    Never use 0x420-0x43F: they are test/service codes on several Onkyo models.
+// =========================================================================
+const uint16_t RI_POWER_ON    = 0x1AF;  // power on + select the TV input
+const uint16_t RI_POWER_OFF   = 0x1AE;  // power off (only while the TV input is selected)
+const uint16_t RI_SELECT_TV   = 0x1A0;  // select the TV input (V3)
+const uint16_t RI_SELECT_DVD  = 0x120;
+const uint16_t RI_SELECT_CD   = 0x020;
+const uint16_t RI_SELECT_TAPE = 0x070;
+const uint16_t RI_VOLUME_UP   = 0x1A2;
+const uint16_t RI_VOLUME_DOWN = 0x1A3;
+const uint16_t RI_MUTE        = 0x1A4;
+const uint16_t RI_UNMUTE      = 0x1A5;
 
-bool tvEncendidaAnterior = false;
-bool primeraLectura = true;
-bool silenciado = false;     // el ampli no informa de su estado: lo seguimos nosotros
-bool sincronizarConTV = true; // false = modo manual: la tele no toca el ampli
-unsigned long ultimoChequeo = 0;
-int fallosConsecutivos = 0;
-unsigned long ultimoWifiOk = 0;
+// Commands the web page can send by name: /cmd?c=NAME
+struct NamedCode { const char* name; uint16_t code; };
+const NamedCode NAMED_CODES[] = {
+  {"in_tv", RI_SELECT_TV}, {"in_dvd", RI_SELECT_DVD}, {"in_cd", RI_SELECT_CD}, {"in_tape", RI_SELECT_TAPE},
+  {"vol_up", RI_VOLUME_UP}, {"vol_down", RI_VOLUME_DOWN},
+};
+
+// =========================================================================
+// 3. BEHAVIOUR
+// =========================================================================
+const unsigned long TV_POLL_MS   = 2500;   // how often the TV is asked for its power state
+const unsigned long COOLDOWN_MS  = 15000;  // minimum time between two automatic actions (avoids loops)
+const unsigned long WIFI_RETRY_MS = 60000; // force a reconnect after this long without WiFi
+
+bool tvOn = false;             // last TV state we acted on
+bool firstReading = true;      // the first reading never triggers an action
+bool followTv = true;          // false = manual mode: the TV does not touch the receiver
+bool muted = false;            // the receiver does not report its state, so we track it
+unsigned long lastPoll = 0;
+unsigned long lastAction = 0;  // millis() of the last automatic action (0 = none yet)
+unsigned long lastWifiOk = 0;
+int tvFailures = 0;
 
 ESP8266WebServer server(80);
 
-// Comandos con nombre disponibles desde la web (/cmd?c=NOMBRE). Verificados en un TX-SR600E.
-struct Cmd { const char* nombre; uint16_t codigo; };
-const Cmd CMDS[] = {
-  {"on_dvd", 0x12F}, {"on_cd", 0x02F}, {"on_tape", 0x07F}, {"on_v3", 0x1AF},
-  {"in_cd", 0x020}, {"in_tape", 0x070}, {"in_dvd", 0x120}, {"in_v3", 0x1A0},
-  {"vol_up", 0x1A2}, {"vol_down", 0x1A3},
-};
-
-// --- Registro circular, visible en /log y por serie ---
-const int LOG_LINEAS = 40;
-String logBuf[LOG_LINEAS];
+// --- Circular event log, shown at /log and on the serial port ---
+const int LOG_LINES = 60;
+String logBuf[LOG_LINES];
 int logPos = 0;
 
-void logln(const String& msg) {
-  String l = String(millis() / 1000) + "s  " + msg;
-  Serial.println(l);
-  logBuf[logPos] = l;
-  logPos = (logPos + 1) % LOG_LINEAS;
+void logLine(const String& msg) {
+  String line = String(millis() / 1000) + "s  " + msg;
+  Serial.println(line);
+  logBuf[logPos] = line;
+  logPos = (logPos + 1) % LOG_LINES;
 }
 
-// --- Protocolo nativo Onkyo RI para ESP8266 ---
+// --- Onkyo RI protocol: 12-bit code, MSB first, sent twice ---
 void sendHeader() {
   digitalWrite(PIN_RI_OUT, HIGH);
   delayMicroseconds(3000);
@@ -65,15 +84,11 @@ void sendHeader() {
   delayMicroseconds(1000);
 }
 
-void sendBit(bool bitVal) {
+void sendBit(bool bitValue) {
   digitalWrite(PIN_RI_OUT, HIGH);
   delayMicroseconds(1000);
   digitalWrite(PIN_RI_OUT, LOW);
-  if (bitVal) {
-    delayMicroseconds(2000);
-  } else {
-    delayMicroseconds(1000);
-  }
+  delayMicroseconds(bitValue ? 2000 : 1000);
 }
 
 void sendTrailer() {
@@ -86,43 +101,42 @@ void sendTrailer() {
 void sendOnkyoRI(uint16_t command) {
   for (int repeat = 0; repeat < 2; repeat++) {
     sendHeader();
-    for (int i = 11; i >= 0; i--) {
-      bool bitVal = (command >> i) & 0x01;
-      sendBit(bitVal);
-    }
+    for (int i = 11; i >= 0; i--) sendBit((command >> i) & 0x01);
     sendTrailer();
     delay(10);
   }
 }
 
-void encenderOnkyo() {
-  silenciado = false;
-  sendOnkyoRI(ONKYO_CMD_ON);
+void powerOn() {
+  muted = false;
+  sendOnkyoRI(RI_POWER_ON);
 }
 
-// 0x1AE solo apaga si el ampli está en V3 (la entrada de la tele)
-void apagarOnkyo() {
-  silenciado = false;
-  sendOnkyoRI(ONKYO_CMD_OFF);
+// The receiver ignores the off code unless the TV input is selected, so from any
+// other input it stays on. That is on purpose: turning the TV off must not cut
+// the music you are playing from another source.
+void powerOff() {
+  muted = false;
+  sendOnkyoRI(RI_POWER_OFF);
   delay(500);
-  sendOnkyoRI(ONKYO_CMD_OFF); // reintento (apagar es idempotente)
+  sendOnkyoRI(RI_POWER_OFF);  // repeat once (power off is idempotent)
 }
 
-// Si el ampli está en otra entrada, primero hay que pasar a V3
-void apagarOnkyoForzado() {
-  sendOnkyoRI(ONKYO_CMD_INPUT_VIDEO3);
+// Switch to the TV input first so the off code is accepted from any input.
+void powerOffFromAnyInput() {
+  sendOnkyoRI(RI_SELECT_TV);
   delay(500);
-  apagarOnkyo();
+  powerOff();
 }
 
-// --- Consulta el estado REAL de la pantalla Samsung Q70R (Puerto 8001) ---
-// Devuelve: 1 = Pantalla ENCENDIDA ("on"), 0 = Pantalla en STANDBY o Apagada, -1 = sin WiFi
-int comprobarEstadoSamsungTV() {
+// --- Samsung (Tizen) TV power state, from http://<tv>:8001/api/v2/ ---
+// Returns 1 = on, 0 = standby or off, -1 = no WiFi.
+int readTvState() {
   if (WiFi.status() != WL_CONNECTED) return -1;
 
   WiFiClient client;
   HTTPClient http;
-  client.setTimeout(1200); // Timeout rápido de 1.2 segundos
+  client.setTimeout(1200);
 
   String url = String("http://") + TV_IP + ":8001/api/v2/";
   if (http.begin(client, url)) {
@@ -131,255 +145,167 @@ int comprobarEstadoSamsungTV() {
     if (httpCode == HTTP_CODE_OK) {
       String payload = http.getString();
       http.end();
-      // Si la tele está encendida con imagen, Tizen devuelve "PowerState":"on"
       if (payload.indexOf("\"PowerState\":\"on\"") != -1) {
-        fallosConsecutivos = 0;
-        return 1; // TV ENCENDIDA REAL
+        tvFailures = 0;
+        return 1;
       }
-      // Si la tele acaba de apagarse al mando o está en actualización nocturna, devuelve "standby"
+      // Just switched off with the remote, or running a nightly update
       if (payload.indexOf("\"PowerState\":\"standby\"") != -1) {
-        fallosConsecutivos = 2;
-        return 0; // TV EN STANDBY INMEDIATO
+        tvFailures = 2;
+        return 0;
       }
     }
     http.end();
   }
 
-  // Si no responde al puerto 8001, contamos 2 intentos fallidos (4 seg) para confirmar apagado
-  fallosConsecutivos++;
-  if (fallosConsecutivos >= 2) {
-    return 0; // TV APAGADA
-  }
-  return tvEncendidaAnterior ? 1 : 0;
+  // No answer: after 2 failed polls in a row (about 5 s) we treat the TV as off
+  tvFailures++;
+  if (tvFailures >= 2) return 0;
+  return tvOn ? 1 : 0;
 }
 
 // =========================================================================
-// 3. WEB DE CONTROL (usuario "admin" + CLAVE_ADMIN)
+// 4. WEB REMOTE (user "admin" + ADMIN_PASSWORD, unless WEB_AUTH is false)
 // =========================================================================
-const char PAGINA[] PROGMEM = R"rawliteral(<!doctype html>
-<html lang="es"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#14161a">
-<title>Onkyo</title>
-<style>
-:root{--bg:#14161a;--card:#1e2127;--btn:#2a2e36;--txt:#e8eaee;--mut:#8b92a0;--acc:#4da3ff;--ok:#2ecc71;--bad:#e5484d}
-@media (prefers-color-scheme:light){:root{--bg:#e9ebef;--card:#fff;--btn:#eef0f4;--txt:#1b1e24;--mut:#6b7280}}
-*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;-webkit-user-select:none;user-select:none}
-body{margin:0;background:var(--bg);color:var(--txt);font-family:system-ui,-apple-system,sans-serif;display:flex;justify-content:center;min-height:100vh}
-.mando{width:100%;max-width:360px;margin:16px;padding:22px 18px 26px;background:var(--card);border-radius:36px;box-shadow:0 8px 30px #0005;align-self:flex-start}
-.marca{text-align:center;letter-spacing:.4em;font-weight:700;font-size:13px;color:var(--mut)}
-.estado{text-align:center;font-size:12px;color:var(--mut);margin:6px 0 18px;min-height:16px}
-button{border:0;border-radius:18px;background:var(--btn);color:var(--txt);font:inherit;font-size:15px;font-weight:600;padding:14px 0;cursor:pointer;transition:transform .08s,background .15s;touch-action:manipulation}
-button:active{transform:scale(.94);background:var(--acc);color:#fff}
-.pwr{display:flex;gap:12px}
-.pwr button{flex:1;height:64px;border-radius:32px;font-size:16px}
-.pwr .on{color:var(--ok)}.pwr .off{color:var(--bad)}
-.entradas{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:18px 0 22px}
-.vol{display:flex;align-items:center;justify-content:space-between;gap:10px}
-.vol .v{width:88px;height:88px;border-radius:50%;font-size:38px;font-weight:300;padding:0}
-.vol .m{flex:1;height:44px;font-size:13px;padding:0}
-.vol .m.act{background:var(--bad);color:#fff}
-.auto{display:flex;align-items:center;justify-content:space-between;margin:24px 4px 0;font-size:14px}
-.sw{width:52px;height:30px;border-radius:15px;padding:0;position:relative}
-.sw::after{content:"";position:absolute;top:3px;left:3px;width:24px;height:24px;border-radius:50%;background:var(--mut);transition:transform .2s,background .2s}
-.sw.act{background:var(--ok)}.sw.act::after{transform:translateX(22px);background:#fff}
-.nota{font-size:11.5px;line-height:1.5;color:var(--mut);margin:16px 4px 0}
-.nota b{color:var(--txt);font-weight:600}
-.nota .link{all:unset;color:var(--acc);cursor:pointer;text-decoration:underline}
-#toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:#000c;color:#fff;padding:8px 16px;border-radius:14px;font-size:13px;opacity:0;transition:opacity .2s;pointer-events:none}
-</style></head><body>
-<div class="mando">
-  <div class="marca">ONKYO</div>
-  <div class="estado" id="st">Conectando...</div>
-
-  <div class="pwr">
-    <button class="on" onclick="c('on')">Encender</button>
-    <button class="off" onclick="c('off')">Apagar</button>
-  </div>
-
-  <div class="entradas">
-    <button onclick="c('in_v3')">V3 &middot; TV</button>
-    <button onclick="c('in_dvd')">DVD</button>
-    <button onclick="c('in_cd')">CD</button>
-    <button onclick="c('in_tape')">TAPE</button>
-  </div>
-
-  <div class="vol">
-    <button class="v" data-c="vol_down">&minus;</button>
-    <button class="m" id="mute" onclick="mute()">MUTE</button>
-    <button class="v" data-c="vol_up">+</button>
-  </div>
-
-  <div class="auto">
-    <span>Sincronizar con la tele</span>
-    <button class="sw" id="sw" onclick="auto()" aria-label="Sincronizar con la tele"></button>
-  </div>
-
-  <p class="nota">
-    <b>Avisos.</b> Al encender la tele, el ampli cambia a la entrada <b>V3</b>; desactiva la
-    sincronización para escuchar otras fuentes sin interrupciones. Si el ampli est&aacute; en
-    otra entrada no se apaga solo: <button class="link" onclick="c('off_forzado')">apagar desde cualquier entrada</button>.
-    El mando no sabe si el ampli est&aacute; encendido.
-  </p>
-</div>
-<div id="toast"></div>
-<script>
-const $ = id => document.getElementById(id);
-let tt;
-function toast(t){ const e=$('toast'); e.textContent=t; e.style.opacity=1; clearTimeout(tt); tt=setTimeout(()=>e.style.opacity=0,1100); }
-async function c(n, callado){
-  try{
-    if(navigator.vibrate) navigator.vibrate(15);
-    const r = await fetch('/cmd?c='+n);
-    if(!callado) toast(r.ok ? 'Enviado' : 'Error');
-    return r.ok;
-  }catch(e){ toast('Sin conexión con la placa'); return false; }
-}
-async function mute(){ if(await c('mute_toggle', true)) estado(); }
-async function auto(){ await fetch('/auto?v='+($('sw').classList.contains('act')?0:1)); estado(); }
-async function estado(){
-  try{
-    const s = await (await fetch('/status')).json();
-    const wifi = s.rssi > -60 ? 'buena' : s.rssi > -75 ? 'regular' : 'débil';
-    $('st').textContent = 'Tele ' + s.tv + ' · WiFi ' + wifi;
-    $('sw').classList.toggle('act', s.auto);
-    $('mute').classList.toggle('act', s.mute);
-  }catch(e){ $('st').textContent = 'Sin conexión con la placa'; }
-}
-// Mantener pulsado +/- repite cada 0,4 s
-document.querySelectorAll('.v').forEach(b => {
-  let t;
-  const parar = () => clearInterval(t);
-  b.addEventListener('pointerdown', e => { e.preventDefault(); c(b.dataset.c, true); t=setInterval(()=>c(b.dataset.c, true), 400); });
-  ['pointerup','pointerleave','pointercancel'].forEach(ev => b.addEventListener(ev, parar));
-});
-estado(); setInterval(estado, 4000);
-</script>
-</body></html>
-)rawliteral";
-
-bool autorizado() {
-  if (!server.authenticate("admin", CLAVE_ADMIN)) {
+bool isAuthorized() {
+  if (!WEB_AUTH) return true;
+  if (!server.authenticate("admin", ADMIN_PASSWORD)) {
     server.requestAuthentication();
     return false;
   }
   return true;
 }
 
+String jsonEscape(const String& text) {
+  String out;
+  for (unsigned int i = 0; i < text.length(); i++) {
+    char ch = text[i];
+    if (ch == '"' || ch == '\\') out += '\\';
+    out += ch;
+  }
+  return out;
+}
+
 void handleRoot() {
-  if (!autorizado()) return;
-  server.send_P(200, "text/html; charset=utf-8", PAGINA);
+  if (!isAuthorized()) return;
+  server.send_P(200, "text/html; charset=utf-8", PAGE);
 }
 
 void handleStatus() {
-  if (!autorizado()) return;
-  String tv = primeraLectura ? "?" : (tvEncendidaAnterior ? "encendida" : "apagada");
-  String j = String("{\"tv\":\"") + tv + "\",\"auto\":" + (sincronizarConTV ? "true" : "false") +
-             ",\"ip\":\"" + WiFi.localIP().toString() + "\",\"rssi\":" + WiFi.RSSI() +
-             ",\"mute\":" + (silenciado ? "true" : "false") +
-             ",\"uptime\":" + (millis() / 1000) + "}";
-  server.send(200, "application/json", j);
+  if (!isAuthorized()) return;
+  String tv = firstReading ? "?" : (tvOn ? "on" : "off");
+  long ago = lastAction == 0 ? -1 : (long)((millis() - lastAction) / 1000);
+  String json = String("{\"tv\":\"") + tv + "\",\"sync\":" + (followTv ? "true" : "false") +
+                ",\"mute\":" + (muted ? "true" : "false") +
+                ",\"model\":\"" + jsonEscape(RECEIVER_NAME) + "\"" +
+                ",\"ssid\":\"" + jsonEscape(WiFi.SSID()) + "\",\"rssi\":" + WiFi.RSSI() +
+                ",\"channel\":" + WiFi.channel() + ",\"ip\":\"" + WiFi.localIP().toString() +
+                "\",\"mac\":\"" + WiFi.macAddress() + "\",\"tvIp\":\"" + TV_IP + "\"" +
+                ",\"ago\":" + ago + ",\"uptime\":" + (millis() / 1000) +
+                ",\"heap\":" + ESP.getFreeHeap() + ",\"fw\":\"" + FW_VERSION + "\"}";
+  server.send(200, "application/json", json);
 }
 
 void handleLog() {
-  if (!autorizado()) return;
+  if (!isAuthorized()) return;
   String out;
-  for (int i = 0; i < LOG_LINEAS; i++) {
-    const String& l = logBuf[(logPos + i) % LOG_LINEAS];
-    if (l.length()) out += l + "\n";
+  for (int i = 0; i < LOG_LINES; i++) {
+    const String& line = logBuf[(logPos + i) % LOG_LINES];
+    if (line.length()) out += line + "\n";
   }
   server.send(200, "text/plain; charset=utf-8", out);
 }
 
 void handleCmd() {
-  if (!autorizado()) return;
-  String nombre = server.arg("c");
-  if (nombre == "on") {
-    logln("WEB: encender (0x1AF)");
-    encenderOnkyo();
-    server.send(200, "text/plain", "OK on");
-    return;
-  }
-  if (nombre == "off") {
-    logln("WEB: apagar (0x1AE)");
-    apagarOnkyo();
-    server.send(200, "text/plain", "OK off");
-    return;
-  }
-  if (nombre == "mute_toggle") {
-    silenciado = !silenciado;
-    logln(String("WEB: ") + (silenciado ? "silenciar (0x1A4)" : "quitar silencio (0x1A5)"));
-    sendOnkyoRI(silenciado ? 0x1A4 : 0x1A5);
-    server.send(200, "text/plain", silenciado ? "mute=1" : "mute=0");
-    return;
-  }
-  if (nombre == "off_forzado") {
-    logln("WEB: apagar forzado (0x1A0 + 0x1AE)");
-    apagarOnkyoForzado();
-    server.send(200, "text/plain", "OK off_forzado");
-    return;
-  }
-  for (const Cmd& cmd : CMDS) {
-    if (nombre == cmd.nombre) {
-      logln("WEB: " + nombre + " (0x" + String(cmd.codigo, HEX) + ")");
-      sendOnkyoRI(cmd.codigo);
-      server.send(200, "text/plain", "OK " + nombre);
-      return;
+  if (!isAuthorized()) return;
+  String name = server.arg("c");
+  if (name == "on") {
+    logLine("WEB: power on");
+    powerOn();
+  } else if (name == "off") {
+    logLine("WEB: power off");
+    powerOff();
+  } else if (name == "off_any_input") {
+    logLine("WEB: power off from any input");
+    powerOffFromAnyInput();
+  } else if (name == "mute_toggle") {
+    muted = !muted;
+    logLine(muted ? "WEB: mute" : "WEB: unmute");
+    sendOnkyoRI(muted ? RI_MUTE : RI_UNMUTE);
+  } else {
+    for (const NamedCode& entry : NAMED_CODES) {
+      if (name == entry.name) {
+        if (!name.startsWith("vol_")) logLine("WEB: " + name + " (0x" + String(entry.code, HEX) + ")");
+        sendOnkyoRI(entry.code);
+        server.send(200, "text/plain", "OK " + name);
+        return;
+      }
     }
+    server.send(400, "text/plain", "Unknown command");
+    return;
   }
-  server.send(400, "text/plain", "Comando desconocido");
+  server.send(200, "text/plain", "OK " + name);
 }
 
-// /raw?code=1A0 -> manda un código en hex. Solo 0x001-0x1FF: los 0x4xx son códigos
-// de test/servicio que en otros Onkyo borran ajustes.
+// /raw?code=1A0 sends any code in hex, limited to 0x001-0x1FF: the 0x4xx codes are
+// test/service codes that open menus, make noise or clear settings on some models.
 void handleRaw() {
-  if (!autorizado()) return;
-  long codigo = strtol(server.arg("code").c_str(), NULL, 16);
-  if (codigo < 0x001 || codigo > 0x1FF) {
-    server.send(400, "text/plain", "Codigo fuera de rango (0x001-0x1FF)");
+  if (!isAuthorized()) return;
+  long code = strtol(server.arg("code").c_str(), NULL, 16);
+  if (code < 0x001 || code > 0x1FF) {
+    server.send(400, "text/plain", "Code out of range (0x001-0x1FF)");
     return;
   }
-  logln("WEB: raw 0x" + String(codigo, HEX));
-  sendOnkyoRI((uint16_t)codigo);
-  server.send(200, "text/plain", "OK raw 0x" + String(codigo, HEX));
+  logLine("WEB: raw 0x" + String(code, HEX));
+  sendOnkyoRI((uint16_t)code);
+  server.send(200, "text/plain", "OK raw 0x" + String(code, HEX));
 }
 
 void handleAuto() {
-  if (!autorizado()) return;
-  sincronizarConTV = server.arg("v") != "0";
-  logln(sincronizarConTV ? "WEB: sincronizar con la tele ACTIVADO" : "WEB: sincronizar con la tele DESACTIVADO (modo manual)");
-  server.send(200, "text/plain", sincronizarConTV ? "auto=1" : "auto=0");
+  if (!isAuthorized()) return;
+  followTv = server.arg("v") != "0";
+  logLine(followTv ? "WEB: follow the TV ON" : "WEB: follow the TV OFF (manual mode)");
+  server.send(200, "text/plain", followTv ? "auto=1" : "auto=0");
 }
 
+void handleReboot() {
+  if (!isAuthorized()) return;
+  logLine("WEB: restarting the board");
+  server.send(200, "text/plain", "OK restarting");
+  delay(300);
+  ESP.restart();
+}
+
+// =========================================================================
+// 5. SETUP AND MAIN LOOP
+// =========================================================================
 void setup() {
   pinMode(PIN_RI_OUT, OUTPUT);
   digitalWrite(PIN_RI_OUT, LOW);
   pinMode(LED_BUILTIN, OUTPUT);
-  digitalWrite(LED_BUILTIN, HIGH); // En NodeMCU el LED va invertido (HIGH = apagado)
+  digitalWrite(LED_BUILTIN, HIGH);  // the NodeMCU LED is inverted: HIGH = off
 
   Serial.begin(115200);
   delay(500);
-  logln("=== CONTROL ONKYO RI POR WIFI (SAMSUNG Q70R) ===");
+  logLine(String("=== onkyo-ri-wifi ") + FW_VERSION + " ===");
 
   WiFi.mode(WIFI_STA);
   WiFi.hostname(HOSTNAME);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  Serial.print("Conectando al WiFi");
-  int intentos = 0;
-  while (WiFi.status() != WL_CONNECTED && intentos < 30) {
+  Serial.print("Connecting to WiFi");
+  for (int attempt = 0; WiFi.status() != WL_CONNECTED && attempt < 30; attempt++) {
     delay(500);
     Serial.print(".");
-    intentos++;
   }
-  logln("WiFi " + String(WiFi.status() == WL_CONNECTED ? "conectado" : "SIN conexion") +
-        ", IP del NodeMCU: " + WiFi.localIP().toString());
-  ultimoWifiOk = millis();
+  logLine(String("WiFi ") + (WiFi.status() == WL_CONNECTED ? "connected" : "NOT connected") +
+          ", board IP: " + WiFi.localIP().toString());
+  lastWifiOk = millis();
 
   ArduinoOTA.setHostname(HOSTNAME);
-  ArduinoOTA.setPassword(CLAVE_ADMIN);
-  ArduinoOTA.onStart([]() { logln("OTA: actualizando..."); });
-  ArduinoOTA.onEnd([]() { logln("OTA: terminado, reiniciando"); });
-  ArduinoOTA.onError([](ota_error_t e) { logln("OTA: error " + String((int)e)); });
+  ArduinoOTA.setPassword(ADMIN_PASSWORD);
+  ArduinoOTA.onStart([]() { logLine("OTA: updating..."); });
+  ArduinoOTA.onEnd([]() { logLine("OTA: done, restarting"); });
+  ArduinoOTA.onError([](ota_error_t error) { logLine("OTA: error " + String((int)error)); });
   ArduinoOTA.begin();
 
   server.on("/", handleRoot);
@@ -388,70 +314,65 @@ void setup() {
   server.on("/cmd", handleCmd);
   server.on("/raw", handleRaw);
   server.on("/auto", handleAuto);
+  server.on("/reboot", handleReboot);
   server.begin();
-  logln("Web y OTA listas en http://" + String(HOSTNAME) + ".local/");
-  if (strcmp(CLAVE_ADMIN, "change-me") == 0) {
-    logln("AVISO: estas usando la clave por defecto. Cambiala en secrets.h");
-  }
+  logLine("Web remote and OTA ready at http://" + String(HOSTNAME) + ".local/");
+  if (strcmp(ADMIN_PASSWORD, "change-me") == 0) logLine("WARNING: default password in use, change it in config.h");
+  if (!WEB_AUTH) logLine("WARNING: the web remote has no password (WEB_AUTH is false)");
 }
 
 void loop() {
   ArduinoOTA.handle();
   server.handleClient();
 
-  // Si el WiFi lleva más de 60 s caído, forzamos la reconexión
   if (WiFi.status() == WL_CONNECTED) {
-    ultimoWifiOk = millis();
-  } else if (millis() - ultimoWifiOk > 60000) {
-    logln("WiFi caido, reconectando...");
+    lastWifiOk = millis();
+  } else if (millis() - lastWifiOk > WIFI_RETRY_MS) {
+    logLine("WiFi lost, reconnecting...");
     WiFi.reconnect();
-    ultimoWifiOk = millis();
+    lastWifiOk = millis();
   }
 
-  // 1. MODO PRUEBA MANUAL POR MONITOR SERIE (opcional, con cable)
+  // Serial test commands (optional, with the USB cable): 1 = on, then off after 4 s; 2 = on; 3 = off
   if (Serial.available() > 0) {
-    char c = Serial.read();
-    if (c == '1') {
-      logln("Test 1: ON V3 (0x1AF) -> espera 4s -> apagado");
-      encenderOnkyo(); delay(4000); apagarOnkyo();
-    } else if (c == '2') {
-      logln("Test 2: ON V3 (0x1AF)");
-      encenderOnkyo();
-    } else if (c == '3') {
-      logln("Test 3: apagado (0x1AE)");
-      apagarOnkyo();
+    char key = Serial.read();
+    if (key == '1') {
+      logLine("Test 1: power on, then off after 4 s");
+      powerOn(); delay(4000); powerOff();
+    } else if (key == '2') {
+      logLine("Test 2: power on");
+      powerOn();
+    } else if (key == '3') {
+      logLine("Test 3: power off");
+      powerOff();
     }
   }
 
-  // 2. VIGILANCIA AUTOMÁTICA DE LA SAMSUNG Q70R CADA 2.5 SEGUNDOS
-  if (millis() - ultimoChequeo >= 2500) {
-    ultimoChequeo = millis();
-    int estado = comprobarEstadoSamsungTV();
+  // Follow the TV: act only when its power state changes, and never twice within COOLDOWN_MS
+  if (millis() - lastPoll >= TV_POLL_MS) {
+    lastPoll = millis();
+    int state = readTvState();
+    if (state == -1) return;
+    bool tvNow = (state == 1);
 
-    if (estado != -1) {
-      bool tvEncendidaAhora = (estado == 1);
+    if (firstReading) {
+      firstReading = false;
+      tvOn = tvNow;
+      digitalWrite(LED_BUILTIN, tvNow ? LOW : HIGH);
+      logLine(tvNow ? "Initial TV state: ON" : "Initial TV state: OFF");
+    } else if (tvNow != tvOn && (lastAction == 0 || millis() - lastAction >= COOLDOWN_MS)) {
+      tvOn = tvNow;
+      lastAction = millis();
+      digitalWrite(LED_BUILTIN, tvNow ? LOW : HIGH);
 
-      if (primeraLectura) {
-        primeraLectura = false;
-        tvEncendidaAnterior = tvEncendidaAhora;
-        digitalWrite(LED_BUILTIN, tvEncendidaAhora ? LOW : HIGH);
-        logln(tvEncendidaAhora ? "Estado inicial TV: ENCENDIDA" : "Estado inicial TV: APAGADA");
-      }
-      else if (tvEncendidaAhora != tvEncendidaAnterior &&
-               (ultimaAccion == 0 || millis() - ultimaAccion >= COOLDOWN_ACCION)) {
-        tvEncendidaAnterior = tvEncendidaAhora;
-        ultimaAccion = millis();
-        digitalWrite(LED_BUILTIN, tvEncendidaAhora ? LOW : HIGH);
-
-        if (!sincronizarConTV) {
-          logln(tvEncendidaAhora ? "TV encendida (modo manual: sin accion)" : "TV apagada (modo manual: sin accion)");
-        } else if (tvEncendidaAhora) {
-          logln(">>> TV ENCENDIDA DETECTADA -> Encendiendo Onkyo!");
-          encenderOnkyo();
-        } else {
-          logln(">>> TV APAGADA DETECTADA -> Apagando Onkyo a Standby!");
-          apagarOnkyo();
-        }
+      if (!followTv) {
+        logLine(tvNow ? "TV turned on (manual mode: no action)" : "TV turned off (manual mode: no action)");
+      } else if (tvNow) {
+        logLine(">>> TV turned on -> powering the receiver on");
+        powerOn();
+      } else {
+        logLine(">>> TV turned off -> powering the receiver off");
+        powerOff();
       }
     }
   }
