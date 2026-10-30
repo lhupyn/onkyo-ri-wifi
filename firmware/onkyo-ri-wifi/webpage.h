@@ -136,12 +136,12 @@ const TEXT = {
     auto: 'Follow the TV', autoOn: 'When the TV turns on or off, the receiver turns on (TV input) or off by itself.',
     autoOff: 'Off: the TV does not affect the receiver. Use it to listen to music without the TV.',
     tech: 'Technical details', rSsid: 'WiFi network', rSignal: 'Signal', rChannel: 'Channel', rIp: 'Board IP',
-    rTvIp: 'TV IP', rTv: 'TV', rAction: 'Last automatic action', rUptime: 'Uptime', rHeap: 'Free memory',
+    rTvIp: 'TV IP', rTv: 'TV', rAction: 'Last TV change handled', rUptime: 'Uptime', rHeap: 'Free memory',
     restart: 'Restart the board', confirmRestart: 'Restart the board? It takes about 15 seconds to come back.',
     restarting: 'Restarting… wait 15 s',
     log: 'Event log', logHint: 'Last 60 events. Older ones are overwritten and everything is cleared on restart. Volume steps are not logged.',
     noEvents: 'No events yet.', github: 'Code and manual on GitHub',
-    tvOn: 'TV on', tvOff: 'TV off', tvUnknown: 'TV ?', sent: 'Sent: ', error: 'Could not send', offline: 'No connection to the board',
+    tvOn: 'TV on', tvOff: 'TV off', tvUnknown: 'TV ?', stOn: 'on', stOff: 'off', stUnknown: 'unknown', sent: 'Sent: ', error: 'Could not send', offline: 'No connection to the board',
     signal: 'Signal ', sq: ['excellent', 'good', 'fair', 'weak', 'very weak'], followsTv: 'Follows TV', manual: 'Manual only',
     never: 'none since boot', ago: ' ago', units: ['d', 'h', 'min']
   },
@@ -155,12 +155,12 @@ const TEXT = {
     auto: 'Automático con la tele', autoOn: 'Al encender o apagar la tele, el ampli se enciende en TV o se apaga solo.',
     autoOff: 'Desactivado: la tele no afecta al ampli. Úsalo para escuchar música sin la tele.',
     tech: 'Detalles técnicos', rSsid: 'Red WiFi', rSignal: 'Señal', rChannel: 'Canal', rIp: 'IP de la placa',
-    rTvIp: 'IP de la tele', rTv: 'Tele', rAction: 'Última acción automática', rUptime: 'Tiempo encendida', rHeap: 'Memoria libre',
+    rTvIp: 'IP de la tele', rTv: 'Tele', rAction: 'Último cambio de la tele', rUptime: 'Tiempo encendida', rHeap: 'Memoria libre',
     restart: 'Reiniciar la placa', confirmRestart: '¿Reiniciar la placa? Tardará unos 15 segundos en volver.',
     restarting: 'Reiniciando… espera 15 s',
     log: 'Registro de eventos', logHint: 'Últimos 60 eventos. Los más antiguos se sustituyen solos y se borran al reiniciar. Los cambios de volumen no se anotan.',
     noEvents: 'Sin eventos todavía.', github: 'Código y manual en GitHub',
-    tvOn: 'Tele encendida', tvOff: 'Tele apagada', tvUnknown: 'Tele ?', sent: 'Enviado: ', error: 'No se pudo enviar', offline: 'Sin conexión con la placa',
+    tvOn: 'Tele encendida', tvOff: 'Tele apagada', tvUnknown: 'Tele ?', stOn: 'encendida', stOff: 'apagada', stUnknown: 'desconocida', sent: 'Enviado: ', error: 'No se pudo enviar', offline: 'Sin conexión con la placa',
     signal: 'Señal ', sq: ['excelente', 'buena', 'regular', 'débil', 'muy débil'], followsTv: 'Auto con la tele', manual: 'Solo manual',
     never: 'ninguna desde el arranque', ago: 'hace ', units: ['d', 'h', 'min']
   }
@@ -214,7 +214,7 @@ async function refresh(){
     if($('dTech').open){
       $('tSsid').textContent = s.ssid; $('tRssi').textContent = s.rssi + ' dBm (' + qName + ')';
       $('tCh').textContent = s.channel; $('tIp').textContent = s.ip; $('tMac').textContent = s.mac;
-      $('tTvIp').textContent = s.tvIp; $('tTv').textContent = s.tv;
+      $('tTvIp').textContent = s.tvIp; $('tTv').textContent = s.tv === 'on' ? t('stOn') : s.tv === 'off' ? t('stOff') : t('stUnknown');
       $('tAct').textContent = s.ago < 0 ? t('never') : lang === 'es' ? t('ago') + duration(s.ago) : duration(s.ago) + t('ago');
       $('tUp').textContent = duration(s.uptime); $('tHeap').textContent = Math.round(s.heap / 1024) + ' KB';
       $('tFw').textContent = s.fw;

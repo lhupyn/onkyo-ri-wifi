@@ -75,7 +75,7 @@ Keep OTA in every version you flash; without it you need the cable again. Do not
 
 ## Using it
 
-Open `http://<board-ip>/` in a browser (user `admin`). Holding `+` / `−` repeats the volume step. A *Technical details* panel shows signal strength, addresses and uptime, and an *Event log* panel shows the last 60 events.
+Open `http://<board-ip>/` in a browser (user `admin`). Holding `+` / `−` repeats the volume step. A *Technical details* panel shows signal strength, addresses and uptime, and an *Event log* panel shows the last 60 events. The board's blue LED mirrors the TV state (lit = TV on).
 
 The same actions are available as a small API:
 

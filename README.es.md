@@ -75,7 +75,7 @@ Mantén OTA en todas las versiones que cargues; sin él necesitas el cable otra 
 
 ## Uso
 
-Abre `http://<ip-de-la-placa>/` en el navegador (usuario `admin`). Mantener pulsado `+` o `−` repite el paso de volumen. Un panel de *Detalles técnicos* muestra la señal, las direcciones y el tiempo encendida, y otro de *Registro de eventos* los últimos 60 eventos.
+Abre `http://<ip-de-la-placa>/` en el navegador (usuario `admin`). Mantener pulsado `+` o `−` repite el paso de volumen. Un panel de *Detalles técnicos* muestra la señal, las direcciones y el tiempo encendida, y otro de *Registro de eventos* los últimos 60 eventos. El LED azul de la placa refleja el estado de la tele (encendido = tele encendida).
 
 Las mismas acciones están disponibles como una pequeña API:
 
